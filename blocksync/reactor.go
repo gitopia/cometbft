@@ -84,9 +84,9 @@ func NewReactorWithOfflineStateSync(state sm.State, blockExec *sm.BlockExecutor,
 	// (bpRequester#requestRoutine; 1 per each peer).
 	requestsCh := make(chan BlockRequest)
 
-	const capacity = 1000                      // must be bigger than peers count
-	errorsCh := make(chan peerError, capacity) // so we don't block in #Receive#pool.AddBlock
-	appHashErrorsCh := make(chan p2p.AppHashError, 5)
+	const capacity = 1000                          // must be bigger than peers count
+	errorsCh := make(chan peerError, capacity)     // so we don't block in #Receive#pool.AddBlock
+	appHashErrorsCh := make(chan p2p.AppHashError) // create an unbuffered channel to stream appHash errors
 
 	startHeight := storeHeight + 1
 	if startHeight == 1 {
@@ -384,19 +384,20 @@ FOR_LOOP:
 				err = bcR.blockExec.ValidateBlock(state, first)
 			}
 
-			if strings.Contains(err.Error(), "wrong Block.Header.AppHash") {
-				bcR.appHashErrorsCh <- p2p.AppHashError{
-					Err:    err,
-					Height: uint64(first.Height),
-				}
-			} else if strings.Contains(err.Error(), "wrong Block.Header.LastResultsHash") {
-				bcR.appHashErrorsCh <- p2p.AppHashError{
-					Err:    err,
-					Height: uint64(first.Height - 1),
-				}
-			}
-
 			if err != nil {
+				// If this is an appHash or lastResultsHash error, also pass to the appHashError channel.
+				if strings.Contains(err.Error(), "wrong Block.Header.AppHash") {
+					bcR.BaseReactor.AppHashErrorChanBR <- p2p.AppHashError{
+						Err:    err,
+						Height: uint64(first.Height),
+					}
+				} else if strings.Contains(err.Error(), "wrong Block.Header.LastResultsHash") {
+					bcR.BaseReactor.AppHashErrorChanBR <- p2p.AppHashError{
+						Err:    err,
+						Height: uint64(first.Height - 1),
+					}
+				}
+
 				bcR.Logger.Error("Error in validation", "err", err)
 				peerID := bcR.pool.RemovePeerAndRedoAllPeerRequests(first.Height)
 				peer := bcR.Switch.Peers().Get(peerID)
@@ -452,6 +453,6 @@ func (bcR *Reactor) BroadcastStatusRequest() {
 	})
 }
 
-func (r *Reactor) AppHashErrorsCh() <-chan p2p.AppHashError {
+func (r *Reactor) AppHashErrorsCh() chan p2p.AppHashError {
 	return r.appHashErrorsCh
 }
